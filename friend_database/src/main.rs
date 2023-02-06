@@ -1,18 +1,19 @@
-/* */
-
 use clap::Parser;
 use friend::Friend;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::num::Wrapping;
 use std::{fs::OpenOptions, path::PathBuf};
 mod friend;
 
 const FILE_HEADER: &str = "Firstname,Surname,Phonenumber";
 const INIT_SIZE: usize = 5;
 const THRESHOLD_FOR_RESIZE: f64 = 0.8;
+const MULTIPLY_CAPACITY_WITH: usize = 2;
 #[derive(Parser)]
 struct Args {
     path: PathBuf,
 }
+
 fn main() {
     let args = Args::parse();
     let (mut friends, mut size_of_table) = get_csv_content(&args.path);
@@ -29,15 +30,8 @@ fn main() {
         match split_line[0].to_ascii_lowercase().trim() {
             "add" => {
                 if split_line.len() == 4 {
-                    //quite ugly, but i cant be bothered to make add_to_table much more neat for CLI inpit.
-                    let pass_line = format!(
-                        "{},{},{}",
-                        split_line[1].trim(),
-                        split_line[2].trim(),
-                        split_line[3].trim()
-                    );
-                    size_of_table +=
-                        add_to_table(&mut friends, size_of_table, Friend::from_line(pass_line));
+                    let friend = Friend::new(split_line[1], split_line[2], split_line[3]);
+                    size_of_table += add_to_table(&mut friends, size_of_table, friend);
                     println!("Added the friend to the database, if it didnt already exist.");
                 } else {
                     print_help();
@@ -51,6 +45,14 @@ fn main() {
                     print_help();
                 }
             },
+            "generate" => {
+                if split_line.len() == 2 {
+                    let amount = split_line[1].parse().unwrap_or(0);
+                size_of_table = generate_imaginary_friends(&mut friends, size_of_table, amount);
+                } else {
+                    print_help();
+                }
+            }
             "listall" => listall(&friends),
             "struct" => print_hash_map(&friends),
             "number" => {
@@ -76,6 +78,7 @@ fn print_help() {
     println!(">add <firstname> <surname> <phonenumber>");
     println!(">remove <firstname> <surname>");
     println!(">number <firstname> <surname>");
+    println!(">generate <amount>");
     println!(">listall");
     println!(">struct");
     println!(">exit");
@@ -100,9 +103,7 @@ fn get_csv_content(path: &PathBuf) -> (Vec<Vec<Friend>>, usize) {
                 if choice.trim().to_lowercase() == "y" {
                     return {
                         let mut _vec: Vec<Vec<Friend>> = Vec::with_capacity(INIT_SIZE);
-                        for i in 0..INIT_SIZE {
-                            _vec.push(Vec::new());
-                        }
+                        _vec.resize(INIT_SIZE, Vec::new());
                         (_vec, 0)
                     };
                 } else {
@@ -117,12 +118,13 @@ fn get_csv_content(path: &PathBuf) -> (Vec<Vec<Friend>>, usize) {
             }
         },
     };
+
     let mut lines = BufReader::new(file).lines().map(|x| x.unwrap());
     if !(lines.next().unwrap_or(String::from("")) == FILE_HEADER) {
         panic!("The file does not follow the database format");
     }
     /*
-    //GG it cant guess so this is always 1
+    //GG it cant guess so this is always 1, keeping here to show work
     let amount_of_lines = {
         let _temp = lines.size_hint();
         match _temp.1 {
@@ -131,10 +133,8 @@ fn get_csv_content(path: &PathBuf) -> (Vec<Vec<Friend>>, usize) {
         }
     };*/
     let mut table: Vec<Vec<Friend>> = Vec::with_capacity(INIT_SIZE);
-    //table.fill(Vec::new()); <-- This is cursed, doesnt actually fill
-    for _ in 0..INIT_SIZE {
-        table.push(Vec::new())
-    }
+    //table.fill(Vec::new()); <-- This is cursed, doesnt actually fill. See test
+    table.resize(INIT_SIZE, Vec::new());
     let mut size_of_table: usize = 0;
     for line in lines {
         let friend = Friend::from_line(line);
@@ -144,22 +144,25 @@ fn get_csv_content(path: &PathBuf) -> (Vec<Vec<Friend>>, usize) {
     (table, size_of_table)
 }
 
+/// Returns an integer-key that satisfy 0 <= key < _capacity
 fn hash(name: &str, _capacity: usize) -> usize {
-    let mut hash = 0;
-    for (index, char) in name.chars().enumerate() {
-        hash += hash * index + char as usize;
+    let mut hash = Wrapping(0usize);
+    let _2 = Wrapping(2usize);
+    for char in name.chars() {
+        hash += hash * _2 + Wrapping(char as usize);
     }
-    hash % _capacity
+    hash.0 % _capacity
 }
 
+/// Resizes and rehashes element in table
 fn resize(table: &mut Vec<Vec<Friend>>) {
-    let _new_cap = table.capacity() * 2;
+    let _new_cap = table.capacity() * MULTIPLY_CAPACITY_WITH;
     let mut _vec: Vec<Vec<Friend>> = Vec::with_capacity(_new_cap);
     for _ in 0.._new_cap {
         _vec.push(Vec::new());
     }
     for outer in 0..table.len() {
-        while true {
+        loop {
             if let Some(friend) = table[outer].pop() {
                 //its a bit cursed but we are fine saying size = 0, since it's only used for purpose of resizing
                 //and we do know that we wont exceed capacity, since we just doubled it. 
@@ -175,7 +178,7 @@ fn resize(table: &mut Vec<Vec<Friend>>) {
 
 //returns 1 if added succesfully, returns 0 if not adding
 fn add_to_table(table: &mut Vec<Vec<Friend>>, current_size: usize, friend: Friend) -> usize {
-    if (current_size + 1) as f64 / table.capacity() as f64 > THRESHOLD_FOR_RESIZE {
+    if (current_size + 1) as f64 / table.capacity() as f64 >= THRESHOLD_FOR_RESIZE {
         //resize
         resize(table);
 
@@ -282,22 +285,6 @@ fn save_fail(attempt: usize, table: &Vec<Vec<Friend>>) {
     }
 }
 
-
-#[test]
-fn test() {
-
-    /*THIS IS SO CURSED
-    WHY DOESNT RUST FILL MY VECTORS!!
-    */
-    let mut _vec: Vec<Vec<usize>> = Vec::with_capacity(10);
-_vec.fill(Vec::new());
-assert!(_vec.len() == 0);
-
-let mut _v: Vec<usize> = Vec::with_capacity(10);
-_v.fill(0);
-assert!(_v.len() == 0);
-}
-
 fn print_hash_map(table: &Vec<Vec<Friend>>) {
     println!("The map looks like:\n");
     for _vec in table.iter().enumerate() {
@@ -306,4 +293,12 @@ fn print_hash_map(table: &Vec<Vec<Friend>>) {
             println!("\t{} {}", friend.firstname, friend.surname);
         }
     }
+}
+
+fn generate_imaginary_friends(table: &mut Vec<Vec<Friend>>, current_size: usize, amount: usize) -> usize{
+    let mut sum = 0;
+    for _ in 0..amount {
+        sum += add_to_table(table, current_size + sum, Friend::new_imaginary_friend());
+    }
+    sum
 }
